@@ -7,6 +7,7 @@ don't see an unexplained "credentials ✓" line when their .env is empty.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -182,6 +183,49 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
     env_loader.reset_secret_source_cache()
     env_loader._apply_external_secret_sources(tmp_path)
     assert call_count["n"] == 2
+
+
+def test_repeated_dotenv_load_restores_cached_external_secret(tmp_path, monkeypatch):
+    """A second module-level dotenv load must not blank a vault credential.
+
+    hermes_cli.main and gateway.run both call load_hermes_dotenv(). User .env
+    files commonly retain an empty key as a bootstrap placeholder. The second
+    override=True load used to replace the fetched value with an empty string,
+    while the once-per-home source guard prevented Bitwarden from restoring it.
+    """
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.test-token")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n",
+        encoding="utf-8",
+    )
+
+    call_count = {"n": 0}
+
+    def _fake_fetch(**_kwargs):
+        call_count["n"] += 1
+        return {"ANTHROPIC_API_KEY": "sk-ant-test"}, []
+
+    import agent.secret_sources.bitwarden as bw_module
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(bw_module, "fetch_bitwarden_secrets", _fake_fetch)
+
+    from agent.secret_sources import registry as reg_module
+    reg_module._reset_registry_for_tests()
+
+    env_loader.load_hermes_dotenv(hermes_home=tmp_path)
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-test"
+
+    env_loader.load_hermes_dotenv(hermes_home=tmp_path)
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-test"
+    assert call_count["n"] == 1
 
 
 def test_apply_external_secret_sources_records_onepassword_origin(tmp_path, monkeypatch):

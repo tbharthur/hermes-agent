@@ -38,6 +38,15 @@ _SECRET_SOURCES: dict[str, str] = {}
 # config re-parse, and the ASCII sanitization sweep still ran every time.
 _APPLIED_HOMES: set[str] = set()
 
+# Values injected by external secret sources, scoped by resolved HERMES_HOME.
+# Repeated load_hermes_dotenv() calls reload the user .env with override=True;
+# placeholder entries such as ``DISCORD_BOT_TOKEN=`` must not erase a value
+# already supplied by Bitwarden/1Password while the once-per-home guard then
+# prevents the source from running again. Keep only values that a source
+# actually applied so a repeat load can restore them without another vault
+# fetch or another startup status line.
+_APPLIED_SECRET_VALUES: dict[str, dict[str, str]] = {}
+
 
 def get_secret_source(env_var: str) -> str | None:
     """Return the label of the secret source that supplied ``env_var``, if any.
@@ -63,6 +72,7 @@ def reset_secret_source_cache() -> None:
     that want to refresh after a config change.
     """
     _APPLIED_HOMES.clear()
+    _APPLIED_SECRET_VALUES.clear()
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -327,6 +337,12 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     """
     home_key = str(Path(home_path).resolve())
     if home_key in _APPLIED_HOMES:
+        # load_hermes_dotenv() may have just reloaded .env with override=True.
+        # Reassert values previously supplied by the external source; otherwise
+        # empty bootstrap placeholders erase live credentials on the second
+        # module import (notably hermes_cli.main -> gateway.run).
+        for name, value in _APPLIED_SECRET_VALUES.get(home_key, {}).items():
+            os.environ[name] = value
         return
     _APPLIED_HOMES.add(home_key)
 
@@ -358,6 +374,11 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # no hint the value came from a vault rather than .env.
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
+        _APPLIED_SECRET_VALUES[home_key] = {
+            name: os.environ[name]
+            for name in report.provenance
+            if os.environ.get(name)
+        }
 
     for src in report.sources:
         if src.applied:
