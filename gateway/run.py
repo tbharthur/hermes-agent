@@ -82,6 +82,7 @@ _GATEWAY_NOISY_STATUS_RE = re.compile(
     r"|codex\s+gpt-5\.5\s+caps\s+context"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
     r"|preflight\s+compression"
+    r"|pre-api\s+compression"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
@@ -450,7 +451,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     platform_value = _gateway_platform_value(platform)
     if _gateway_surface_passes_raw_text(platform):
         return text
-    if platform_value in {"telegram", "discord"} and _GATEWAY_NOISY_STATUS_RE.search(text):
+    if _GATEWAY_NOISY_STATUS_RE.search(text):
         return None
     if platform_value != "telegram":
         return text
