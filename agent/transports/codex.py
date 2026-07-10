@@ -162,10 +162,30 @@ class ResponsesApiTransport(ProviderTransport):
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
 
-        _effort_clamp = {"minimal": "low"}
+        # GPT-5.6 Ultra is a Codex orchestration mode, not a value accepted by
+        # the direct ChatGPT Responses endpoint. Hermes implements Ultra with
+        # max wire effort plus proactive delegate_task guidance in the request
+        # instructions, preserving Hermes' own tool loop and subagents.
+        ultra_mode = reasoning_effort == "ultra"
+        _effort_clamp = {"minimal": "low", "ultra": "max"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)
+        if ultra_mode and any(
+            isinstance(tool, dict)
+            and isinstance(tool.get("function"), dict)
+            and tool["function"].get("name") == "delegate_task"
+            for tool in (tools or [])
+        ):
+            instructions = (
+                f"{instructions}\n\n# Ultra mode\n"
+                "Use maximum reasoning and proactive multi-agent execution for genuinely complex work. "
+                "Delegate independent, reasoning-heavy workstreams with `delegate_task` when parallel "
+                "investigation, implementation, or adversarial review will materially improve the result. "
+                "Do not delegate trivial work or single tool calls. Keep ownership in the parent agent: "
+                "reconcile conflicting findings, verify external side effects yourself, and deliver one "
+                "coherent final result."
+            )
 
         # xAI server-side web search.
         #

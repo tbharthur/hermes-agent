@@ -67,13 +67,15 @@ class TestCodexBuildKwargs:
         kw = transport.build_kwargs(model="gpt-5.4", messages=messages, tools=[])
         assert kw["instructions"]  # should be non-empty default
 
-    def test_reasoning_config(self, transport):
+    @pytest.mark.parametrize("effort", ["high", "max", "ultra"])
+    def test_reasoning_config(self, transport, effort):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
-            reasoning_config={"effort": "high"},
+            model="gpt-5.6-sol", messages=messages, tools=[],
+            reasoning_config={"effort": effort},
         )
-        assert kw.get("reasoning", {}).get("effort") == "high"
+        expected = "max" if effort == "ultra" else effort
+        assert kw.get("reasoning", {}).get("effort") == expected
 
     def test_reasoning_disabled(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
@@ -82,6 +84,25 @@ class TestCodexBuildKwargs:
             reasoning_config={"enabled": False},
         )
         assert "reasoning" not in kw or kw.get("include") == []
+
+    def test_ultra_adds_multi_agent_guidance_when_delegation_is_available(self, transport):
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "delegate_task",
+                "description": "Delegate work",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Solve it"}],
+            tools=tools,
+            reasoning_config={"effort": "ultra"},
+        )
+        assert kw["reasoning"]["effort"] == "max"
+        assert "# Ultra mode" in kw["instructions"]
+        assert "delegate_task" in kw["instructions"]
 
     def test_cache_key_is_content_addressed_not_session_id(self, transport):
         """prompt_cache_key is content-addressed from the static prefix
