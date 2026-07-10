@@ -1141,12 +1141,14 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
 
     CWD-only overrides (registered by the ACP adapter for workspace
     tracking) are *not* isolation signals — they should not cause each
-    session to spin up its own container.  Only overrides containing
-    backend-specific image keys or ``env_type`` trigger isolation.
+    session to spin up its own container. Gateway channel workspaces add the
+    private ``_session_cwd`` marker because concurrent channels must not share
+    a mutable local-environment CWD. Backend-specific images and ``env_type``
+    remain isolation signals for RL/benchmark environments.
     """
     _ISOLATION_KEYS = frozenset({
         "docker_image", "modal_image", "singularity_image",
-        "daytona_image", "env_type",
+        "daytona_image", "env_type", "_session_cwd",
     })
     if task_id and task_id in _task_env_overrides:
         overrides = _task_env_overrides[task_id]

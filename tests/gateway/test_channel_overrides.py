@@ -300,3 +300,108 @@ class TestResolveSessionAgentRuntimePriority:
              }):
             model, _runtime = runner._resolve_session_agent_runtime(source=source)
         assert model == "parent/model"
+
+    def test_parent_channel_runtime_inherited_in_thread(self):
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "parent_chan": ChannelOverride(
+                            model="gpt-5.6-sol",
+                            provider="openai-codex",
+                            openai_runtime="codex_app_server",
+                        ),
+                    },
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="thread_1",
+            chat_type="thread",
+            parent_chat_id="parent_chan",
+            user_id="u1",
+        )
+        with patch("gateway.run._resolve_gateway_model", return_value="global/model"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+                 "provider": "openrouter",
+                 "api_key": "k",
+                 "base_url": "https://openrouter.ai/api/v1",
+                 "api_mode": "chat_completions",
+             }), \
+             patch(
+                 "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+                 return_value={
+                     "provider": "openai-codex",
+                     "api_key": "oauth",
+                     "base_url": "https://chatgpt.com/backend-api/codex",
+                     "api_mode": "codex_responses",
+                 },
+             ):
+            model, runtime = runner._resolve_session_agent_runtime(source=source)
+
+        assert model == "gpt-5.6-sol"
+        assert runtime["provider"] == "openai-codex"
+        assert runtime["api_mode"] == "codex_app_server"
+
+
+class TestChannelWorkspace:
+    def test_channel_override_round_trip_includes_workspace_and_runtime(self):
+        override = ChannelOverride.from_dict({
+            "model": "gpt-5.6-sol",
+            "provider": "openai-codex",
+            "cwd": "/tmp/project",
+            "openai_runtime": "codex_app_server",
+        })
+
+        assert override.cwd == "/tmp/project"
+        assert override.openai_runtime == "codex_app_server"
+        assert override.to_dict()["cwd"] == "/tmp/project"
+        assert override.to_dict()["openai_runtime"] == "codex_app_server"
+
+    def test_parent_channel_workspace_inherited_in_thread(self, tmp_path):
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "parent_chan": ChannelOverride(cwd=str(tmp_path)),
+                    },
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="thread_1",
+            chat_type="thread",
+            parent_chat_id="parent_chan",
+            user_id="u1",
+        )
+
+        assert runner._resolve_channel_cwd(source) == str(tmp_path)
+
+    def test_missing_workspace_is_ignored(self, tmp_path):
+        runner = object.__new__(GatewayRunner)
+        missing = tmp_path / "missing"
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "chan_1": ChannelOverride(cwd=str(missing)),
+                    },
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chan_1",
+            chat_type="channel",
+            user_id="u1",
+        )
+
+        assert runner._resolve_channel_cwd(source) is None

@@ -124,6 +124,21 @@ def test_cwd_only_override_collapses_to_default():
         terminal_tool.clear_task_env_overrides("acp-session-abc")
 
 
+def test_gateway_session_cwd_keeps_own_environment_id():
+    """Concurrent gateway channels must not share a mutable environment CWD."""
+    terminal_tool.register_task_env_overrides(
+        "gateway-session-cascade",
+        {"cwd": "/home/user/partnership", "_session_cwd": True},
+    )
+    try:
+        assert (
+            terminal_tool._resolve_container_task_id("gateway-session-cascade")
+            == "gateway-session-cascade"
+        )
+    finally:
+        terminal_tool.clear_task_env_overrides("gateway-session-cascade")
+
+
 def test_cwd_plus_docker_image_keeps_own_id():
     """When overrides include both cwd AND docker_image, isolation must
     still be honoured (RL/benchmark pattern with explicit cwd)."""

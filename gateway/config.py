@@ -403,15 +403,17 @@ class SessionResetPolicy:
 @dataclass
 class ChannelOverride:
     """
-    Per-channel override for model, provider, and system prompt.
+    Per-channel overrides for model, provider, prompt, workspace, and runtime.
 
     Used in config under platforms.<name>.channel_overrides[channel_id].
     Enables different channels (e.g. Discord #daily vs #dev) to use different
-    models and personas without running separate gateway instances.
+    models, personas, workspaces, and Codex runtimes without separate gateways.
     """
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    cwd: Optional[str] = None
+    openai_runtime: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
@@ -421,6 +423,10 @@ class ChannelOverride:
             out["provider"] = self.provider
         if self.system_prompt is not None:
             out["system_prompt"] = self.system_prompt
+        if self.cwd is not None:
+            out["cwd"] = self.cwd
+        if self.openai_runtime is not None:
+            out["openai_runtime"] = self.openai_runtime
         return out
 
     @classmethod
@@ -431,6 +437,8 @@ class ChannelOverride:
             model=data.get("model"),
             provider=data.get("provider"),
             system_prompt=data.get("system_prompt"),
+            cwd=data.get("cwd"),
+            openai_runtime=data.get("openai_runtime"),
         )
 
 

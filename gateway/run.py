@@ -3839,6 +3839,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if ch_runtime_model and not ch.model:
                         model = ch_runtime_model
 
+                # Runtime is channel-scoped and inherited through the same parent
+                # lookup as model/prompt overrides.  Apply it before the explicit
+                # per-session /model override below so the user's session choice
+                # remains the highest-precedence route.
+                channel_runtime = (ch.openai_runtime or "").strip().lower()
+                if channel_runtime:
+                    provider = runtime_kwargs.get("provider")
+                    if provider != "openai-codex":
+                        logger.warning(
+                            "Ignoring channel openai_runtime=%s for non-Codex provider %s",
+                            channel_runtime,
+                            provider,
+                        )
+                    elif channel_runtime == "codex_app_server":
+                        runtime_kwargs["api_mode"] = "codex_app_server"
+                    elif channel_runtime == "auto":
+                        runtime_kwargs["api_mode"] = "codex_responses"
+                    else:
+                        logger.warning(
+                            "Ignoring unsupported channel openai_runtime=%s",
+                            channel_runtime,
+                        )
+
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
@@ -14892,6 +14915,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return delivered
 
+    def _resolve_channel_cwd(self, source: Optional[SessionSource]) -> Optional[str]:
+        """Resolve a channel/thread workspace without changing process-global CWD."""
+        if source is None:
+            return None
+        override = _get_channel_override(
+            self.config,
+            source.platform,
+            source.chat_id,
+            thread_id=getattr(source, "thread_id", None),
+            parent_id=getattr(source, "parent_chat_id", None),
+        )
+        raw_cwd = (override.cwd if override else None) or ""
+        if not raw_cwd.strip():
+            return None
+        cwd = os.path.abspath(os.path.expandvars(os.path.expanduser(raw_cwd.strip())))
+        if not os.path.isdir(cwd):
+            logger.warning(
+                "Ignoring channel cwd for %s:%s because it is not a directory: %s",
+                _platform_config_key(source.platform),
+                source.chat_id,
+                cwd,
+            )
+            return None
+        return cwd
+
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.
 
@@ -14912,22 +14960,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
-        return set_session_vars(
+        cwd = self._resolve_channel_cwd(context.source)
+        tokens = set_session_vars(
             platform=context.source.platform.value,
+            source=getattr(
+                context.source.chat_type, "value", str(context.source.chat_type or "")
+            ),
             chat_id=context.source.chat_id,
             chat_name=context.source.chat_name or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            session_id=context.session_id,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            cwd=cwd or "",
             async_delivery=_async_delivery,
         )
 
+        # Tool workers run in ordinary threads, where ContextVars do not cross.
+        # Mirror the session CWD into the existing task-scoped override registry;
+        # AIAgent passes session_id as the top-level tool task_id.
+        if cwd and context.session_id:
+            try:
+                from tools.terminal_tool import register_task_env_overrides
+
+                register_task_env_overrides(
+                    context.session_id, {"cwd": cwd, "_session_cwd": True}
+                )
+            except Exception:
+                logger.debug("Could not register session cwd override", exc_info=True)
+        return tokens
+
     def _clear_session_env(self, tokens: list) -> None:
-        """Restore session context variables to their pre-handler values."""
-        from gateway.session_context import clear_session_vars
+        """Clear session context and task-scoped workspace after a message."""
+        from gateway.session_context import clear_session_vars, get_session_env
+
+        session_id = get_session_env("HERMES_SESSION_ID", "")
+        if session_id:
+            try:
+                from tools.terminal_tool import clear_task_env_overrides
+
+                clear_task_env_overrides(session_id)
+            except Exception:
+                logger.debug("Could not clear session cwd override", exc_info=True)
         clear_session_vars(tokens)
 
     async def _run_in_executor_with_context(self, func, *args):
@@ -17911,6 +17988,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if cfg_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
 
+            # Keep the workspace visible to the model as well as binding it in
+            # runtime_cwd. Including it in the ephemeral signature also forces a
+            # cached Codex agent/thread to rebuild if the channel workspace changes.
+            session_cwd = self._resolve_channel_cwd(source)
+            if session_cwd:
+                workspace_prompt = (
+                    "Channel workspace: use this as the default working directory "
+                    f"for all repository and file operations: {session_cwd}"
+                )
+                combined_ephemeral = (
+                    combined_ephemeral + "\n\n" + workspace_prompt
+                ).strip()
+
             max_iterations = _current_max_iterations()
 
             try:
@@ -18223,6 +18313,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
+
+            # Codex app-server reads this when creating/resuming its thread. The
+            # session ContextVar covers this turn; the attribute also survives the
+            # internal worker boundary used by the runtime adapter.
+            setattr(agent, "session_cwd", session_cwd)
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
